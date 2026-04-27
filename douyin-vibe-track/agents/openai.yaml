@@ -1,0 +1,4 @@
+interface:
+  display_name: "Douyin Vibe Track"
+  short_description: "Monitor accounts and create daily video reports"
+  default_prompt: "Use $douyin-vibe-track to monitor configured Douyin/TikTok accounts and generate today's high-like video report."
