@@ -83,6 +83,17 @@ def shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def resolve_reports_root(workspace: Path, config: dict[str, Any]) -> Path:
+    raw_reports_dir = str(config.get("reports_dir") or "").strip()
+    if not raw_reports_dir:
+        return workspace / "reports"
+
+    reports_root = Path(raw_reports_dir).expanduser()
+    if not reports_root.is_absolute():
+        reports_root = workspace / reports_root
+    return reports_root
+
+
 def account_label(account: dict[str, Any]) -> str:
     return str(
         account.get("display_name")
@@ -614,7 +625,8 @@ def main() -> int:
     reported_ids = {str(value) for value in state.get("reported_aweme_ids", [])}
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    report_dir = workspace / "reports" / report_date
+    reports_root = resolve_reports_root(workspace, config)
+    report_dir = reports_root / report_date
     accounts_dir = report_dir / "accounts"
     videos_dir = report_dir / "videos"
     accounts_dir.mkdir(parents=True, exist_ok=True)
