@@ -128,6 +128,22 @@ python3 <skill-dir>/scripts/fetch_user_profile.py --workspace ~/douyin-vibe-trac
 python3 -m pip install -r <skill-dir>/requirements.txt
 ```
 
+还要确保系统已安装 `ffmpeg`。`requirements.txt` 只安装 Python 依赖，不会安装 `ffmpeg`。Agent 在生成包含嵌入视频的 PPT 前，必须先确认 `ffmpeg` 可用；否则脚本虽然仍会继续生成 PPT，但不会稳定抽取视频截图作为 poster frame，视频兼容性也会下降。
+
+常见安装方式：
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Ubuntu / Debian
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+
+# Windows (PowerShell)
+winget install FFmpeg
+```
+
 4. 运行：
 
 ```bash

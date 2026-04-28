@@ -308,24 +308,41 @@ def extract_poster_frame(video_path: Path) -> Path | None:
     if not ffmpeg:
         return None
     poster_path = video_path.with_suffix(".jpg")
-    command = [
-        ffmpeg,
-        "-y",
-        "-ss",
-        "00:00:01",
-        "-i",
-        str(video_path),
-        "-frames:v",
-        "1",
-        "-q:v",
-        "2",
-        str(poster_path),
+    commands = [
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            str(poster_path),
+        ],
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_path),
+            "-vf",
+            "thumbnail",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            str(poster_path),
+        ],
     ]
-    try:
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError:
-        return None
-    return poster_path if poster_path.exists() else None
+    for command in commands:
+        poster_path.unlink(missing_ok=True)
+        try:
+            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            continue
+        if poster_path.exists():
+            return poster_path
+    return None
 
 
 def unwrap_posts(payload: dict[str, Any]) -> dict[str, Any]:
