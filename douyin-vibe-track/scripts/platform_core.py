@@ -44,6 +44,7 @@ POSTS_URLS = {
     "tiktok": "https://api.tikhub.io/api/v1/tiktok/app/v3/fetch_user_post_videos",
     "kuaishou": "https://api.tikhub.io/api/v1/kuaishou/web/fetch_user_post",
     "kuaishou_app_v2": "https://api.tikhub.io/api/v1/kuaishou/app/fetch_user_post_v2",
+    "kuaishou_hot_post": "https://api.tikhub.io/api/v1/kuaishou/app/fetch_user_hot_post",
     "wechat_channels": "https://api.tikhub.io/api/v1/wechat_channels/fetch_home_page",
 }
 
@@ -562,6 +563,18 @@ def fetch_posts_page(workspace: Path, platform: str, identity: dict[str, Any], c
                 max_retries_override=retries,
             )
         except Exception as exc:
+            if cursor in (None, ""):
+                try:
+                    return request_tikhub(
+                        workspace,
+                        "GET",
+                        POSTS_URLS["kuaishou_hot_post"],
+                        params={"user_id": numeric_user_id},
+                        timeout_override=timeout,
+                        max_retries_override=retries,
+                    )
+                except Exception:
+                    pass
             raise RuntimeError(
                 "kuaishou app fetch_user_post_v2 failed after repeated retries "
                 f"(user_id={numeric_user_id}, pcursor={cursor!r}). Original error: {exc}"

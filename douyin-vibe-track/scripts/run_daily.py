@@ -371,7 +371,10 @@ def direct_account_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
 def account_retry_command(workspace: Path, account: dict[str, Any]) -> str:
     platform = str(account.get("platform") or "douyin")
     identity = dict(account.get("identity") or {})
-    base = f"python3 douyin-vibe-track/scripts/run_daily.py --workspace {shell_quote(str(workspace))} --platform {shell_quote(platform)}"
+    base = (
+        f"python3 douyin-vibe-track/scripts/run_daily.py --workspace {shell_quote(str(workspace))} "
+        f"--platform {shell_quote(platform)} --resume-report"
+    )
     if platform == "wechat_channels" and identity.get("username"):
         return f"{base} --username {shell_quote(str(identity['username']))}"
     if platform == "kuaishou" and identity.get("eid"):
@@ -696,12 +699,13 @@ def print_issues(issues: list[RunIssue]) -> None:
 def extract_kuaishou_video_urls(item: dict[str, Any]) -> list[str]:
     urls: list[str] = []
     photo = (item.get("photo") or {}) if item.get("photo") else item
-    cover = photo.get("photoUrl") or photo.get("playUrl") or ""
+    cover = photo.get("photoUrl") or photo.get("playUrl") or item.get("photo_url") or item.get("play_url") or ""
     for value in [cover]:
         if isinstance(value, str) and value and value not in urls:
             urls.append(value)
-    for key in ("mainMvUrls", "photoH265Urls", "photoH264Urls"):
-        for entry in photo.get(key) or []:
+    for key in ("mainMvUrls", "photoH265Urls", "photoH264Urls", "main_mv_urls", "photo_h265_urls", "photo_h264_urls"):
+        entries = photo.get(key) or item.get(key) or []
+        for entry in entries:
             url = entry.get("url")
             if url and url not in urls:
                 urls.append(str(url))
@@ -712,6 +716,15 @@ def extract_kuaishou_video_urls(item: dict[str, Any]) -> list[str]:
             if url and url not in urls:
                 urls.append(str(url))
     return urls
+
+
+def normalize_epoch_seconds(value: Any) -> int:
+    if value in (None, "", 0):
+        return 0
+    epoch = int(float(value))
+    if epoch > 10**12:
+        return epoch // 1000
+    return epoch
 
 
 def extract_wechat_video_urls(item: dict[str, Any]) -> tuple[list[str], str]:
@@ -767,23 +780,23 @@ def to_candidate(platform: str, item: dict[str, Any]) -> Candidate | None:
     if platform == "kuaishou":
         photo = (item.get("photo") or {}) if item.get("photo") else item
         author = photo.get("author") or item.get("author") or {}
-        post_id = str(photo.get("photoId") or photo.get("id") or "")
+        post_id = str(photo.get("photoId") or photo.get("photo_id") or photo.get("id") or item.get("photo_id") or item.get("id") or "")
         if not post_id:
             return None
         urls = extract_kuaishou_video_urls(item)
         return Candidate(
             platform=platform,
             post_id=post_id,
-            author_name=str(author.get("name") or author.get("user_name") or ""),
-            author_id=str(author.get("id") or author.get("eid") or ""),
-            desc=str(photo.get("caption") or photo.get("title") or ""),
-            share_url=str(photo.get("shareUrl") or photo.get("photoUrl") or ""),
-            create_time=int(photo.get("timestamp") or photo.get("createTime") or 0),
+            author_name=str(author.get("name") or author.get("user_name") or item.get("user_name") or ""),
+            author_id=str(author.get("id") or author.get("eid") or item.get("user_id") or ""),
+            desc=str(photo.get("caption") or photo.get("title") or item.get("caption") or item.get("title") or ""),
+            share_url=str(photo.get("shareUrl") or photo.get("photoUrl") or item.get("share_url") or item.get("photo_url") or ""),
+            create_time=normalize_epoch_seconds(photo.get("timestamp") or photo.get("createTime") or item.get("timestamp") or item.get("create_time") or 0),
             metrics={
-                "like_count": summarize_counts(photo.get("realLikeCount") or photo.get("likeCount")),
-                "collect_count": summarize_counts(photo.get("viewCount")),
-                "share_count": summarize_counts(photo.get("shareCount")),
-                "comment_count": summarize_counts(photo.get("commentCount")),
+                "like_count": summarize_counts(photo.get("realLikeCount") or photo.get("likeCount") or item.get("like_count")),
+                "collect_count": summarize_counts(photo.get("viewCount") or item.get("view_count")),
+                "share_count": summarize_counts(photo.get("shareCount") or item.get("share_count") or item.get("forward_count")),
+                "comment_count": summarize_counts(photo.get("commentCount") or item.get("comment_count")),
             },
             video={"download_urls": urls, "decrypt_key": "", "needs_decrypt": False},
         )
@@ -972,9 +985,9 @@ def process_candidate_download(
                 message=str(exc),
                 fix="Retry this account only. If it still fails, verify the video URL and, for 视频号, confirm Node.js and the decode_key flow are available before rerunning.",
                 command=(
-                    f"python3 douyin-vibe-track/scripts/run_daily.py --workspace {shell_quote(str(workspace))} --platform {shell_quote(item.platform)} --username {shell_quote(item.author_id)}"
+                    f"python3 douyin-vibe-track/scripts/run_daily.py --workspace {shell_quote(str(workspace))} --platform {shell_quote(item.platform)} --resume-report --username {shell_quote(item.author_id)}"
                     if item.platform == "wechat_channels" and item.author_id
-                    else f"python3 douyin-vibe-track/scripts/run_daily.py --workspace {shell_quote(str(workspace))} --platform {shell_quote(item.platform)} --account {shell_quote(item.author_name or item.author_id)}"
+                    else f"python3 douyin-vibe-track/scripts/run_daily.py --workspace {shell_quote(str(workspace))} --platform {shell_quote(item.platform)} --resume-report --account {shell_quote(item.author_name or item.author_id)}"
                 ),
             ),
             time.perf_counter() - started,
@@ -991,6 +1004,14 @@ def post_key(platform: str, post_id: str) -> str:
     return f"{platform}:{post_id}"
 
 
+def candidate_report_sort_key(
+    item: Candidate,
+    report_order: dict[str, tuple[int, int]],
+) -> tuple[int, int, int]:
+    platform_index, account_index = report_order.get(post_key(item.platform, item.post_id), (sys.maxsize, sys.maxsize))
+    return (platform_index, account_index, -item.create_time)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one daily multi-platform monitoring pass.")
     parser.add_argument("--workspace", default=str(Path.home() / WORKSPACE_DIRNAME))
@@ -1001,6 +1022,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unique-id", default="", help="Run one douyin/tiktok user directly by unique_id.")
     parser.add_argument("--username", default="", help="Run one wechat_channels user directly by username.")
     parser.add_argument("--eid", default="", help="Run one kuaishou user directly by eid.")
+    parser.add_argument(
+        "--resume-report",
+        action="store_true",
+        help="When running a targeted retry for a configured account, reuse other cached account results for today and continue the downstream download/PPT steps.",
+    )
     return parser.parse_args()
 
 
@@ -1123,7 +1149,12 @@ def main() -> int:
         or args.username
         or args.eid
     )
-    accounts_for_report = enabled_accounts if is_targeted_run or any(account.get("_direct") for account in enabled_accounts) else configured_enabled_accounts
+    should_resume_report = bool(args.resume_report and is_targeted_run and not any(account.get("_direct") for account in enabled_accounts))
+    accounts_for_report = (
+        configured_enabled_accounts
+        if should_resume_report
+        else enabled_accounts if is_targeted_run or any(account.get("_direct") for account in enabled_accounts) else configured_enabled_accounts
+    )
     errors: list[RunIssue] = []
     pending_accounts = []
     for account in enabled_accounts:
@@ -1165,12 +1196,18 @@ def main() -> int:
     metrics.fetch_stage_seconds = round(time.perf_counter() - fetch_started, 3)
 
     candidates: list[Candidate] = []
+    candidate_report_order: dict[str, tuple[int, int]] = {}
     missing_accounts: list[dict[str, Any]] = []
-    for account in accounts_for_report:
+    platform_order: dict[str, int] = {}
+    for account_index, account in enumerate(accounts_for_report):
         account_candidates = read_completed_account_candidates(account_data_path(accounts_dir, account))
         if account_candidates is None:
             missing_accounts.append(account)
             continue
+        platform = str(account.get("platform") or "douyin")
+        platform_index = platform_order.setdefault(platform, len(platform_order))
+        for item in account_candidates:
+            candidate_report_order[post_key(item.platform, item.post_id)] = (platform_index, account_index)
         candidates.extend(account_candidates)
 
     existing_error_accounts = {issue.account for issue in errors if issue.account}
@@ -1217,7 +1254,7 @@ def main() -> int:
         )
         return 1
 
-    candidates.sort(key=lambda item: (item.like_count, item.create_time), reverse=True)
+    candidates.sort(key=lambda item: candidate_report_sort_key(item, candidate_report_order))
     metrics.download_candidates = len(candidates)
 
     download_queue: list[Candidate] = []

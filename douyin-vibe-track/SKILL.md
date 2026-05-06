@@ -185,11 +185,15 @@ python3 <skill-dir>/scripts/run_daily.py --workspace ~/douyin-vibe-track --platf
 python3 <skill-dir>/scripts/run_daily.py --workspace ~/douyin-vibe-track --account <display_name_or_identity>
 ```
 
+当这些单账号命令来自 `issues.json.recovery_commands` 时，命令会带 `--resume-report`。这表示脚本只重抓该账号，但会复用当天其他账号已完成的 `accounts/*.json`，并在该账号修复成功后继续完成视频下载和 PPT 生成，无需再手动补跑一次全量命令。
+
 脚本会按平台调用 TikHub 对应接口，筛选最近 `lookback_hours` 小时内、且达到平台阈值 `thresholds.<platform>.like_count` 的作品，并排除已在 `state.json.reported_post_keys` 中出现过的 `<platform>:<post_id>`。
 
 输出写入 `<reports_dir 或 ~/douyin-vibe-track/reports>/YYYY-MM-DD/`：
 
-- `accounts/*.json`：每个账号独立的抓取和过滤结果文件
+- `accounts/*.json`：每个账号独立的最终结果文件，顶层字段为 `status`、`generated_at`、`account`、`candidates`
+- `accounts/*.json` 中的 `candidates`：最终命中的作品列表；后续汇总、下载和生成 PPT 都应读取这个字段
+- `posts`：仅是脚本抓取阶段在内存中使用的原始帖子列表，不会写入 `accounts/*.json`，Agent 不应依赖该字段
 - `videos/*.mp4`：下载并规范化后的命中视频
 - `summary.pptx`：唯一的跨平台日报
 - `issues.json`：仅在出现可恢复错误时生成
@@ -201,6 +205,15 @@ python3 <skill-dir>/scripts/run_daily.py --workspace ~/douyin-vibe-track --accou
 脚本会为 API 和下载请求设置超时，并对失败请求最多重试 `max_retries` 次，默认 3 次。
 
 如果脚本以非 0 状态退出，先看 stdout 末尾 JSON 的 `status`、`report_dir`、`issues` 和 `recovery_commands`；如果已经生成 `report_dir/issues.json`，优先读取该文件。Agent 必须按其中的 `fix` 和 `command` 继续处理，直到日报和视频结果完成。
+
+Agent 恢复流程必须按循环执行，而不是只做一轮：
+
+1. 读取最新的 `issues.json` 或 stdout 末尾 JSON。
+2. 优先执行其中给出的 `recovery_commands`；这些命令通常只重跑失败账号，并在成功后自动继续完成剩余报告步骤。
+3. 每执行完一轮后，重新读取最新的 `issues.json`。
+4. 如果 `issues` 仍然存在但内容已经变化，继续处理新的剩余问题。
+5. 只有在 `status=completed` 时才算结束；不要因为某个单账号重试一次后仍失败就停止整个恢复流程。
+6. 如果同一问题连续多轮完全无变化，再向用户报告具体阻塞点和已尝试命令。
 
 - 缺少 API key：配置 `config.json`；不要让脚本提示输入。
 - 缺少依赖：安装 `requirements.txt`；视频号解密还要确认 `node` 可用。
