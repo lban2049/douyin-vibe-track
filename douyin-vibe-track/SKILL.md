@@ -141,17 +141,20 @@ python3 <skill-dir>/scripts/fetch_user_profile.py --workspace ~/douyin-vibe-trac
 
 ### 添加快手账号
 
-1. 优先让用户提供 `https://www.kuaishou.com/profile/<eid>` 主页链接。
-2. 先提取 `eid`：
+1. 让用户提供该账号任意一条快手视频 URL，不再支持通过主页链接添加账号。
+2. 先解析身份：
 
 ```bash
-python3 <skill-dir>/scripts/extract_sec_user_id.py --workspace ~/douyin-vibe-track --platform kuaishou "<homepage-or-share-text>"
+python3 <skill-dir>/scripts/extract_sec_user_id.py --workspace ~/douyin-vibe-track --platform kuaishou "<video-url-or-share-text>"
 ```
+
+说明：
+- 视频 URL 会先调用 TikHub `fetch_one_video_by_url`，从视频详情里提取纯数字 `user_id`，必要时同时补充 `eid`。
 
 3. 再查询用户信息：
 
 ```bash
-python3 <skill-dir>/scripts/fetch_user_profile.py --workspace ~/douyin-vibe-track --platform kuaishou --eid <eid>
+python3 <skill-dir>/scripts/fetch_user_profile.py --workspace ~/douyin-vibe-track --platform kuaishou --user-id <numeric_user_id>
 ```
 
 删除、禁用、启用或查看账号时，直接编辑或读取 `accounts.json`。匹配账号时优先使用 `homepage_url` 或平台主标识，然后是 `display_name`。

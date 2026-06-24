@@ -31,6 +31,7 @@ def format_output(platform: str, resolved: dict[str, object]) -> dict[str, objec
         result["first_sec_user_id"] = sec_user_id
     elif platform == "kuaishou":
         result["eid"] = identity.get("eid") or ""
+        result["user_id"] = identity.get("user_id") or ""
     else:
         result["username"] = identity.get("username") or ""
         if resolved.get("candidates"):

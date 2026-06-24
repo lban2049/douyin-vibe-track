@@ -36,7 +36,7 @@ PLATFORM_LABELS = {
 PROFILE_URLS = {
     "douyin": "https://api.tikhub.io/api/v1/douyin/app/v3/handler_user_profile",
     "tiktok": "https://api.tikhub.io/api/v1/tiktok/app/v3/handler_user_profile",
-    "kuaishou": "https://api.tikhub.io/api/v1/kuaishou/web/fetch_user_info",
+    "kuaishou": "https://api.tikhub.io/api/v1/kuaishou/app/fetch_one_user_v2",
 }
 
 POSTS_URLS = {
@@ -48,6 +48,7 @@ POSTS_URLS = {
     "wechat_channels": "https://api.tikhub.io/api/v1/wechat_channels/fetch_home_page",
 }
 
+KUAISHOU_VIDEO_DETAIL_BY_URL = "https://api.tikhub.io/api/v1/kuaishou/app/fetch_one_video_by_url"
 WECHAT_USER_SEARCH_V2_URL = "https://api.tikhub.io/api/v1/wechat_channels/fetch_user_search_v2"
 WECHAT_VIDEO_DETAIL_URL = "https://api.tikhub.io/api/v1/wechat_channels/fetch_video_detail"
 DOUYIN_SEC_ID_URLS = {
@@ -95,7 +96,7 @@ def get_session() -> Session:
 
 
 def should_retry_response(response: Response, retryable_status_codes: set[int] | None = None) -> bool:
-    codes = retryable_status_codes or {429, 500, 502, 503, 504}
+    codes = retryable_status_codes or {400, 429, 500, 502, 503, 504}
     return response.status_code in codes
 
 
@@ -146,7 +147,10 @@ def request_json(
                 time.sleep(min(2 ** (attempt - 1), 8))
                 continue
             break
-    raise RuntimeError(f"request failed after {attempts_made} attempts: {last_error}") from last_error
+    retry_hint = ""
+    if last_error and should_retry_exception(last_error, retryable_status_codes):
+        retry_hint = " Agent should retry the same command again instead of treating this as a final hard failure."
+    raise RuntimeError(f"request failed after {attempts_made} attempts: {last_error}.{retry_hint}".rstrip()) from last_error
 
 
 def request_tikhub(
@@ -169,7 +173,7 @@ def request_tikhub(
     max_retries = int(max_retries_override or config.get("max_retries") or 3)
     retryable_status_codes = {
         int(value)
-        for value in (config.get("retryable_status_codes") or [429, 500, 502, 503, 504])
+        for value in (config.get("retryable_status_codes") or [400, 429, 500, 502, 503, 504])
         if str(value).strip()
     }
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -216,6 +220,24 @@ def deep_collect(node: Any, keys: set[str]) -> list[Any]:
         for value in node:
             found.extend(deep_collect(value, keys))
     return found
+
+
+def first_numeric_string(candidates: list[Any]) -> str:
+    for value in candidates:
+        if isinstance(value, bool):
+            continue
+        text = str(value or "").strip()
+        if text.isdigit():
+            return text
+    return ""
+
+
+def first_string(candidates: list[Any]) -> str:
+    for value in candidates:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def summarize_counts(value: Any) -> int:
@@ -290,6 +312,26 @@ def find_douyin_sec_user_ids(payload: Any) -> list[str]:
     return found
 
 
+def extract_kuaishou_numeric_user_id(payload: Any) -> str:
+    return first_numeric_string(
+        deep_collect(
+            payload,
+            {"userId", "user_id", "authorId", "author_id", "owner_id", "uid"},
+        )
+    )
+
+
+def extract_kuaishou_eid(payload: Any) -> str:
+    eid = first_string(deep_collect(payload, {"eid", "user_eid", "entityId"}))
+    if eid:
+        return eid
+    for value in deep_collect(payload, {"user_id"}):
+        text = str(value or "").strip()
+        if text and not text.isdigit():
+            return text
+    return ""
+
+
 def resolve_account_identity(workspace: Path, platform: str, raw_inputs: list[str]) -> dict[str, Any]:
     platform = normalize_platform(platform)
     joined = " ".join(raw_inputs).strip()
@@ -310,31 +352,30 @@ def resolve_account_identity(workspace: Path, platform: str, raw_inputs: list[st
         }
 
     if platform == "kuaishou":
-        eid_match = re.search(r"(?:kuaishou\.com/profile|c\.kuaishou\.com/fw/user)/([0-9A-Za-z_-]+)", joined)
-        if not eid_match:
-            short_url_match = re.search(r"https?://v\.kuaishou\.com/[0-9A-Za-z]+", joined)
-            if short_url_match:
-                response = requests.get(
-                    short_url_match.group(0),
-                    allow_redirects=True,
-                    timeout=20,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-                redirected = response.url
-                eid_match = re.search(r"c\.kuaishou\.com/fw/user/([0-9A-Za-z_-]+)", redirected)
-        if eid_match:
-            eid = eid_match.group(1)
-        else:
-            generic = re.search(r"\b(?!kuaishou\b)([0-9A-Za-z]{8,})\b", joined)
-            if not generic:
-                raise RuntimeError("Could not extract kuaishou eid from input.")
-            eid = generic.group(1)
-        return {
-            "platform": platform,
-            "identity": {
-                "eid": eid,
-            },
-        }
+        video_url_match = re.search(
+            r"https?://(?:www\.)?(?:kuaishou\.com/short-video/[0-9A-Za-z_-]+|v\.kuaishou\.com/[0-9A-Za-z]+)",
+            joined,
+        )
+        if video_url_match:
+            payload = request_tikhub(
+                workspace,
+                "GET",
+                KUAISHOU_VIDEO_DETAIL_BY_URL,
+                params={"share_text": video_url_match.group(0)},
+            )
+            numeric_user_id = extract_kuaishou_numeric_user_id(payload)
+            if not numeric_user_id:
+                raise RuntimeError("Could not extract kuaishou numeric user_id from video detail response.")
+            identity = {"user_id": numeric_user_id}
+            eid = extract_kuaishou_eid(payload)
+            if eid:
+                identity["eid"] = eid
+            return {
+                "platform": platform,
+                "identity": identity,
+                "video_detail": payload.get("data"),
+            }
+        raise RuntimeError("Kuaishou account add only supports video URL input.")
 
     username_match = re.search(r"\b([0-9A-Za-z_=-]+@finder)\b", joined)
     if username_match:
@@ -415,6 +456,8 @@ def unwrap_profile(platform: str, payload: dict[str, Any]) -> dict[str, Any]:
         profile = (((data or {}).get("userProfile") or {}).get("profile")) or {}
         if profile:
             return data
+        if isinstance(data, dict) and deep_find_first(data, {"userId", "user_id", "user_name", "name", "nickname"}):
+            return data
         raise RuntimeError("could not find kuaishou user profile data in TikHub response")
 
     if isinstance(data, dict) and data:
@@ -442,7 +485,7 @@ def fetch_profile(workspace: Path, platform: str, identity: dict[str, Any]) -> d
             workspace,
             "GET",
             PROFILE_URLS[platform],
-            params={"user_id": identity.get("eid") or identity.get("user_id") or ""},
+            params={"user_id": identity.get("user_id") or identity.get("eid") or ""},
             timeout_override=max(35, int(load_json(workspace / "config.json", {}).get("request_timeout_seconds") or 30)),
         )
         return unwrap_profile(platform, payload)
@@ -479,19 +522,47 @@ def summarize_profile(platform: str, profile: dict[str, Any], *, identity: dict[
         user_profile = profile.get("userProfile") or {}
         profile_block = user_profile.get("profile") or {}
         counts = user_profile.get("ownerCount") or {}
-        numeric_user_id = user_profile.get("userDefineId") or user_profile.get("userId") or identity.get("user_id") or ""
+        display_name = first_string(
+            [
+                profile_block.get("user_name"),
+                deep_find_first(profile, {"user_name", "nickname", "name"}),
+            ]
+        )
+        numeric_user_id = first_string(
+            [
+                user_profile.get("userDefineId"),
+                user_profile.get("userId"),
+                extract_kuaishou_numeric_user_id(profile),
+                identity.get("user_id"),
+            ]
+        )
+        eid = first_string(
+            [
+                profile_block.get("user_id"),
+                extract_kuaishou_eid(profile),
+                identity.get("eid"),
+            ]
+        )
         return {
             "platform": platform,
-            "display_name": profile_block.get("user_name") or "",
+            "display_name": display_name,
             "identity": {
-                "eid": profile_block.get("user_id") or identity.get("eid") or "",
+                "eid": eid,
                 "user_id": str(numeric_user_id or ""),
-                "unique_id": profile_block.get("user_name") or "",
+                "unique_id": display_name,
             },
-            "follower_count": summarize_counts(counts.get("fan")),
-            "following_count": summarize_counts(counts.get("follow")),
-            "post_count": summarize_counts(counts.get("photo_public")),
-            "signature": profile_block.get("user_text") or "",
+            "follower_count": summarize_counts(
+                first_string([counts.get("fan"), deep_find_first(profile, {"fan", "fans", "follower_count", "followers"})])
+            ),
+            "following_count": summarize_counts(
+                first_string([counts.get("follow"), deep_find_first(profile, {"follow", "following_count", "follow_count"})])
+            ),
+            "post_count": summarize_counts(
+                first_string([counts.get("photo_public"), deep_find_first(profile, {"photo_public", "video_count", "post_count"})])
+            ),
+            "signature": first_string(
+                [profile_block.get("user_text"), deep_find_first(profile, {"user_text", "signature", "bio", "description"})]
+            ),
             "region": "",
         }
 

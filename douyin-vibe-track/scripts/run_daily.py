@@ -211,7 +211,7 @@ def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         "read_timeout_seconds": int(config.get("request_timeout_seconds") or 30),
         "max_pages_per_account": 3,
         "slow_account_threshold_seconds": 45,
-        "retryable_status_codes": [429, 500, 502, 503, 504],
+        "retryable_status_codes": [400, 429, 500, 502, 503, 504],
     }
     for key, value in defaults.items():
         if key not in config:
